@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sebo - Colaborador</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav><a href="cliente.html">Área do cliente</a></nav>
+  <h1>Sebo: entrada de estoque</h1>
+  <form id="form">
+    <label>Código do livro
+      <input id="id" required placeholder="ex.: L001">
+    </label>
+    <label>Título
+      <input id="titulo" required>
+    </label>
+    <label>Autor
+      <input id="autor">
+    </label>
+    <label>Quantidade (negativa registra saída)
+      <input id="quantidade" type="number" step="1" value="1" required>
+    </label>
+    <button id="enviar" type="submit">Cadastrar</button>
+  </form>
+  <div id="resultado" class="msg"></div>
+
+  <h2>Estoque</h2>
+  <button id="atualizar" type="button">Atualizar estoque</button>
+  <div id="estoque"></div>
+
+  <script src="config.js"></script>
+  <script>
+    const form = document.getElementById("form");
+    const botao = document.getElementById("enviar");
+    const resultado = document.getElementById("resultado");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      botao.disabled = true;
+      try {
+        const { status, dados } = await chamar(CONFIG.URL_CADASTRAR, {
+          id: document.getElementById("id").value.trim(),
+          titulo: document.getElementById("titulo").value.trim(),
+          autor: document.getElementById("autor").value.trim(),
+          quantidade: parseInt(document.getElementById("quantidade").value, 10),
+        });
+        if (status === 200) {
+          mostrar(resultado, "ok", "Estoque atualizado. " + JSON.stringify(dados));
+          carregarEstoque();
+        } else if (status === 409) {
+          mostrar(resultado, "erro", "Estoque insuficiente para essa saída.");
+        } else {
+          mostrar(resultado, "erro", dados.erro || "Erro inesperado (HTTP " + status + ").");
+        }
+      } catch (err) {
+        mostrar(resultado, "erro", "Falha de comunicação: " + err.message);
+      } finally {
+        botao.disabled = false;
+      }
+    });
+
+    async function carregarEstoque() {
+      const alvo = document.getElementById("estoque");
+      if (!CONFIG.URL_LISTAR) {
+        alvo.textContent = "Listagem indisponível: configure URL_LISTAR em config.js (Lambda Listar).";
+        return;
+      }
+      try {
+        const { status, dados } = await chamar(CONFIG.URL_LISTAR, {});
+        if (status !== 200) { alvo.textContent = "Erro ao listar (HTTP " + status + ")."; return; }
+        const linhas = (dados.livros || []).map(l =>
+          `<tr><td>${esc(l.id)}</td><td>${esc(l.titulo)}</td><td>${esc(l.autor)}</td><td>${esc(l.quantidade)}</td></tr>`).join("");
+        alvo.innerHTML = "<table><tr><th>ID</th><th>Título</th><th>Autor</th><th>Qtd</th></tr>" + linhas + "</table>";
+      } catch (err) {
+        alvo.textContent = "Falha de comunicação: " + err.message;
+      }
+    }
+    function esc(v) {
+      return String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    }
+    document.getElementById("atualizar").addEventListener("click", carregarEstoque);
+    carregarEstoque();
+  </script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sebo - Cliente</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav><a href="colaborador.html">Área do colaborador</a></nav>
+  <h1>Sebo: quero um livro</h1>
+  <form id="form">
+    <label>Código do livro
+      <input id="livro_id" required placeholder="ex.: L001">
+    </label>
+    <label>Seu e-mail
+      <input id="email" type="email" required placeholder="voce@email.com">
+    </label>
+    <button id="enviar" type="submit">Solicitar</button>
+  </form>
+  <div id="resultado" class="msg"></div>
+
+  <script src="config.js"></script>
+  <script>
+    const form = document.getElementById("form");
+    const botao = document.getElementById("enviar");
+    const resultado = document.getElementById("resultado");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      botao.disabled = true;
+      try {
+        const { status, dados } = await chamar(CONFIG.URL_SOLICITAR, {
+          livro_id: document.getElementById("livro_id").value.trim(),
+          email: document.getElementById("email").value.trim(),
+        });
+        if (status === 200 && dados.status === "disponivel") {
+          mostrar(resultado, "ok", "Livro disponível! Enviamos um e-mail pedindo que você compareça à livraria.");
+        } else if (status === 200 && dados.status === "lista_de_espera") {
+          mostrar(resultado, "espera", "Livro indisponível no momento. Você entrou na lista de espera e será avisado por e-mail.");
+        } else if (status === 404) {
+          mostrar(resultado, "erro", "Livro não encontrado.");
+        } else {
+          mostrar(resultado, "erro", dados.erro || "Erro inesperado (HTTP " + status + ").");
+        }
+      } catch (err) {
+        mostrar(resultado, "erro", "Falha de comunicação: " + err.message);
+      } finally {
+        botao.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
