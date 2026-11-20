@@ -1,118 +1,99 @@
-# Relatório: Sebo na AWS
+# Relatório: sebo na AWS
 
-Segundo Trabalho de Distribuição e Concorrência (2026/2).
-Integrantes: Arthur Hammond Aragão Poggy e Jayme Augusto Avelino de Paiva
+Segundo Trabalho de Distribuição e Concorrência (2026/2)
+
+Grupo: Arthur Hammond Aragão Poggy e Jayme Augusto Avelino de Paiva
+
 Conta da AWS Academy com a implementação: 3336-9331-7353 (usuário `Arthur_Hammond_Arag__o_Poggy`, região us-east-1)
 
 ## 1. Descrição
-Aplicação para um sebo na nuvem da Amazon. O cliente informa o livro e o e-mail. Se o livro tem estoque, recebe um e-mail pedindo que compareça à livraria. Se não tem, entra em uma lista de espera e é avisado por e-mail quando o livro chegar. O colaborador cadastra a chegada (ou saída) de exemplares.
+
+A aplicação atende um sebo em que o cliente escolhe um livro e informa o e-mail. Se houver exemplar ele recebe um e-mail pedindo que compareça à livraria para efetivar a compra, caso não haja, ele entra em uma lista de espera e é avisado por e-mail quando o livro chegar. 
+O colaborador registra a entrada e a saída de exemplares com o estoque e a lista de espera no DynamoDB.
+
+Cada função Lambda tem uma responsabilidade só e são expostas por Function URL. 
+Os e-mails saiem pelo SNS e a interface é um par de páginas HTML locais e chamam as funções pela web.
 
 ## 2. Arquitetura
 
-Serviços usados: AWS Lambda (4 funções), DynamoDB (2 tabelas), SNS (e-mail) e Function URLs (HTTPS). Interfaces em HTML/JavaScript.
+Serviços usados: AWS Lambda (5 funções), DynamoDB (2 tabelas), SNS (e-mail) e Function URLs (HTTPS, em 4 das funções). Interfaces em HTML e JavaScript.
 
-### 2.1 Diagrama em blocos
-```mermaid
-flowchart LR
-    C[Interface do cliente<br/>cliente.html] -->|HTTPS POST| S[Lambda Solicitar<br/>Function URL]
-    K[Interface do colaborador<br/>colaborador.html] -->|HTTPS POST| CA[Lambda Cadastrar<br/>Function URL]
-    K -->|HTTPS POST| L[Lambda Listar<br/>Function URL]
-    S --> LV[(DynamoDB Livros)]
-    S --> LE[(DynamoDB ListaEspera)]
-    CA --> LV
-    CA --> LE
-    L --> LV
-    S -->|invoke| N[Lambda Notificar]
-    CA -->|invoke| N
-    N -->|publish| SNS[SNS LivrariaAvisos]
-    SNS -->|e-mail| E[Cliente inscrito]
-```
+Só a `Notificar` não tem Function URL: ela é chamada apenas pela `Solicitar` e pela `Cadastrar`.
 
-### 2.2 Responsabilidades das funções
-| Função | Responsabilidade |
-|---|---|
-| `Solicitar` | Consulta `Livros`. Com estoque, pede à `Notificar` o aviso de disponibilidade. Sem estoque, grava em `ListaEspera` e avisa que o cliente será chamado. Respostas: 200, 400, 404. |
-| `Cadastrar` | Soma a quantidade ao estoque (cria o livro se não existir). Ao chegar exemplar, avisa cada cliente da `ListaEspera` daquele livro e o remove da lista. Saída com estoque insuficiente: 409. |
-| `Notificar` | Publica a mensagem no tópico SNS, que entrega o e-mail. |
-| `Listar` | Devolve os livros e as quantidades para a tela do colaborador. |
+### 2.1 Responsabilidades das funções
 
-### 2.3 Dados
-- `Livros`: `id` (chave), `titulo`, `autor`, `quantidade`.
-- `ListaEspera`: `livro_id` (partição), `email` (classificação), `data`.
+Solicitar -> Recebe o pedido de um livro (código e e-mail do cliente) e consulta o estoque em Livros. Se há exemplar, pede à Notificar o aviso para o cliente comparecer à livraria, se não há, grava o cliente em ListaEspera e pede o aviso de que ele será chamado quando o livro chegar. Responde 400 para dados inválidos, 404 para livro inexistente e 502 se o aviso não puder ser enviado.
 
-A chave composta de `ListaEspera` impede duplicar o mesmo cliente para o mesmo livro. A saída de estoque usa uma condição atômica no `update_item` (`quantidade >= :min`), então o estoque nunca fica negativo, mesmo com chamadas simultâneas.
+Cadastrar -> Registra a entrada ou a saída de exemplares. Soma a quantidade ao estoque e cria o livro se ele ainda não existir. Quando chega exemplar, avisa pela Notificar cada cliente que esperava aquele livro e o tira da ListaEspera. Uma saída maior que o estoque é recusada com 409, e dados inválidos recebem 400.
 
-### 2.4 Diagrama de sequência (UML)
-```mermaid
-sequenceDiagram
-    actor Cli as Cliente
-    actor Col as Colaborador
-    participant UI as Interface
-    participant Sol as Solicitar
-    participant Cad as Cadastrar
-    participant DB as DynamoDB
-    participant Not as Notificar
-    participant SNS as SNS (e-mail)
+Notificar -> Publica a mensagem no tópico SNS, que entrega o e-mail. Envia junto o endereço do destinatário como atributo da mensagem, para que cada assinatura receba só o que é dela. Só a Solicitar e a Cadastrar chamam essa função.
 
-    Cli->>UI: livro e e-mail
-    UI->>Sol: POST (livro_id, email)
-    Sol->>DB: get_item Livros
-    alt livro disponível
-        Sol->>Not: invoke "compareça à livraria"
-        Not->>SNS: publish
-        SNS-->>Cli: e-mail
-        Sol-->>UI: 200 disponivel
-    else livro indisponível
-        Sol->>DB: put_item ListaEspera
-        Sol->>Not: invoke "você será avisado"
-        Not->>SNS: publish
-        SNS-->>Cli: e-mail
-        Sol-->>UI: 200 lista_de_espera
-    end
+Listar -> Devolve todos os livros com autor e quantidade, em ordem de título. A tela do cliente usa para montar a lista de livros, e a do colaborador para mostrar o estoque.
 
-    Col->>UI: id, título, autor, quantidade
-    UI->>Cad: POST
-    Cad->>DB: update_item Livros
-    Cad->>DB: query ListaEspera
-    loop cada cliente em espera
-        Cad->>Not: invoke "livro chegou"
-        Not->>SNS: publish
-        SNS-->>Cli: e-mail
-        Cad->>DB: delete_item ListaEspera
-    end
-    Cad-->>UI: 200
-```
-Para gerar imagem (PNG/SVG) dos dois diagramas, cole os blocos em https://mermaid.live.
+Inscrever -> Recebe um e-mail, confere se é válido e cria no tópico uma assinatura que só entrega as mensagens dirigidas a esse endereço. O SNS manda ao cliente um e-mail de confirmação. Responde 400 para e-mail inválido e 502 se a assinatura não puder ser criada.
 
-## 3. Instalação e operação
-Ver `INSTALACAO_E_OPERACAO.md`.
+### 2.2 Dados
 
-## 4. O que funcionou
-Testado até o momento (resumo T1 a T7):
-- `Notificar` pelo console: status 200 e e-mail recebido.
-- `Solicitar` pelo console, livro disponível e indisponível: e-mails corretos.
-- `Cadastrar` pelo console: execução bem-sucedida.
-- `Solicitar` e `Cadastrar` pelas Function URLs com curl: respostas corretas.
-- Recusa de saída com estoque insuficiente (409): implementada.
+`Livros` tem `id` (chave), `titulo`, `autor` e `quantidade`. 
+`ListaEspera` tem `livro_id` (partição), `email` (classificação) e `data`.
 
-## 5. O que ainda precisa ser testado/preencher (depois de configurar a AWS)
-- [x] T10: fluxo "livro disponível" ponta a ponta pelas interfaces.
-- [x] T11: fluxo "livro indisponível, depois chega" ponta a ponta pelas interfaces.
-- [x] Saída válida com quantidade negativa (usada no T11 para zerar o estoque).
-- [ ] Saída com estoque insuficiente (resposta 409).
-- [x] Tela de estoque com a Lambda `Listar` (CORS ajustado nas três Function URLs).
-- [ ] Anexar capturas de tela dos testes e dos e-mails recebidos.
+A chave composta de `ListaEspera` impede duplicar o mesmo cliente para o mesmo livro. A saída de estoque usa uma condição no próprio `update_item` (`quantidade >= :min`), então o estoque não fica negativo nem com chamadas simultâneas.
+
+### 2.3 Como o e-mail chega ao cliente
+
+A `Notificar` publica a mensagem no tópico `LivrariaAvisos` com um atributo `email`, que é o endereço do destinatário. 
+O SNS entrega uma cópia a cada assinatura confirmada. 
+As assinaturas criadas pela `Inscrever` têm uma política de filtro com o endereço do inscrito, então cada cliente recebe só as mensagens dirigidas a ele.
+
+### 2.4 Falha no envio do aviso
+
+Quando a `Solicitar` ou a `Cadastrar` chama a `Notificar`, o `invoke` não gera erro se a função chamada quebrar. A falha aparece no campo `FunctionError` da resposta, e as duas funções conferem esse campo. A `Solicitar` responde 502, e o pedido na lista de espera continua registrado. A `Cadastrar` mantém na `ListaEspera` os clientes que não puderam ser avisados e devolve `status: parcial`, com os endereços em `falhas`. Eles são avisados na próxima chegada daquele livro.
+
+## 3. Instalação
+
+O ambiente foi montado à mão pelo console na primeira vez, porém ao entrar no lab depois de um tempo todas as funções e tabelas tinha desaparecido, para evitar retrabalho se isso acontecesse denovo optamos por criar um `recriar_sebo.sh` que recria todas funções e tabelas no banco.
+
+### 3.1 Requisitos
+
+Conta do Learner Lab com o lab ligado, região us-east-1, o CloudShell do console e um e-mail para receber os avisos.
+
+### 3.2 Passos
+
+1. Clicar em Start Lab, esperar a bolinha ficar verde e abrir o console pelo link AWS.
+2. Abrir o CloudShell e enviar o arquivo `recriar_sebo.sh` (Ações, Fazer upload do arquivo) (esse passo e o próximo podem ser pulados caso as funções e tabelas já estejam no lab e não tenham sido apagadas como aconteceu anteriormente).
+3. Rodar, com o e-mail que vai receber os avisos:
+   ```
+   bash recriar_sebo.sh seu@email.com
+   ```
+4. Abrir o e-mail e confirmar a inscrição.
+5. Copiar as quatro URLs que o script imprime no final para `interface/config.js`: `URL_SOLICITAR`, `URL_CADASTRAR`, `URL_LISTAR` e `URL_INSCREVER`. (isso só precisa ser feito caso o script tenha que ter sido rodado pelo lab ter apagado as funções/tabelas, caso contrário não será necessário, já que o config.js já estará com as URLs corretas)
+6. Abrir `interface/cliente.html` para ter acesso a interface.
+
+### 3.3 Código-fonte
+
+O código-fonte das funções está em `interface/lambda/` (apenas uma cópia para consulta/vista, ele não é usado em nenhum momento pelo código, as funções usadas são as funções lambda na AWS).
+
+## 4. Operação
+
+Considerando o lab ligado e as URLs corretas no `config.js`:
+
+Para acessar a interface do cliente basta abrir `cliente.html`. 
+Em "Receber avisos por e-mail", o cliente informa o endereço e clica em Cadastrar e-mail, depois abre o link de confirmação que chega por e-mail. 
+Em "Pedir um livro", escolhe o livro na lista, informa o e-mail e clica em Solicitar. A tela mostra se o livro está disponível ou se o cliente entrou na lista de espera.
+
+Para acessar a interface do colaborador basta abrir `colaborador.html`, ou trocar pra ela na interface do cliente. Nela é possível atualizar o estoque ao informar o código, título, autor e quantidade e clicar em Registrar. Quantidade positiva soma ao estoque e avisa quem estava na lista de espera daquele livro e quantidade negativa registra saída e é recusada se não houver exemplares suficientes. 
+A tabela Estoque mostra os livros e é atualizada a cada registro.
+
+## 5. O que funcionou
+
+As funções lambda e tabelas funcionaram conforme o esperado, o envio de emails pelo serviço SNS também e a interface possibilita testar tudo, além funcionar como o esperado também. Ou seja, é possível cadastrar um email de forma que ele recebe a notificação e pode confirmar a inscrição, os emails de falta de estoque ou aviso para comparecer a loja funcionam também e só são enviados após o email ter confirmado a inscrição e as atualizações das tabelas pela interface também funcionam de acordo.
 
 ## 6. Problemas encontrados
-| Problema | Causa e solução |
-|---|---|
-| `Notificar` falhou com *InvalidParameter: Topic Name* | `TOPIC_ARN` não era um ARN válido. Corrigido colando o ARN completo, sem espaços nem aspas. |
-| Erro `iam:GetPolicy` na aba Configuração | O Learner Lab bloqueia a leitura das políticas da LabRole. Afeta só o resumo no console. |
-| curl devolveu "id e titulo são obrigatórios" | Comando de várias linhas colado sem as quebras. Resolvido rodando em uma linha só. |
-| E-mail chega mesmo com `seu@email.com` no JSON | Esperado: o SNS entrega a todos os inscritos; o campo `email` só aparece no texto. |
+
+Criamos as funções lambda e as tabelas no dia 14/11, ao voltar a acessar o lab no dia 20/11 elas tinham desaparecido. Para evitar problemas caso isso aconteça novamente criamos o script recriar_sebo.sh que foi citado nesse relatório para conseguir recriar tudo de forma rápida caso isso venha a acontecer novamente.
 
 ## 7. Limitações
-- Todo inscrito no tópico recebe todos os avisos, de qualquer cliente (simplificação do enunciado).
-- As Function URLs usam Auth NONE: quem tiver o endereço pode chamar a função.
-- A `ListaEspera` avisa todos os clientes de uma vez; não há controle de quem compra primeiro.
-- As interfaces são páginas estáticas locais, sem login.
+
+- Como não estava no escopo do trabalho não usamos nenhuma proteção de autentificação para chamar as funções e/ou login para acessar a área de colaborador na interface.
+- Todos os clientes da lista de espera não são avisados caso o livro volte a ficar fora de estoque novamente depois.
+- Os recursos do Learner Lab podem desaparecer, como aconteceu entre 14 e 20/11. O `recriar_sebo.sh` refaz o ambiente, mas as URLs mudam, fazendo com que seja necessário atualizar elas no configs.js

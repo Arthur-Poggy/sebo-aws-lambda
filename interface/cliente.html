@@ -8,47 +8,106 @@
 </head>
 <body>
   <nav><a href="colaborador.html">Área do colaborador</a></nav>
-  <h1>Sebo: quero um livro</h1>
+  <h1>Pedir um livro</h1>
   <form id="form">
-    <label>Código do livro
-      <input id="livro_id" required placeholder="ex.: L001">
+    <label>Livro
+      <select id="livro" required disabled>
+        <option value="">Carregando...</option>
+      </select>
     </label>
     <label>Seu e-mail
-      <input id="email" type="email" required placeholder="voce@email.com">
+      <input id="email" type="email" required>
     </label>
-    <button id="enviar" type="submit">Solicitar</button>
+    <button id="enviar" type="submit" disabled>Solicitar</button>
   </form>
   <div id="resultado" class="msg"></div>
+
+  <h2>Receber avisos por e-mail</h2>
+  <form id="form-inscricao">
+    <label>E-mail
+      <input id="email-inscricao" type="email" required>
+    </label>
+    <button id="inscrever" type="submit">Cadastrar e-mail</button>
+  </form>
+  <div id="resultado-inscricao" class="msg"></div>
 
   <script src="config.js"></script>
   <script>
     const form = document.getElementById("form");
+    const seletor = document.getElementById("livro");
     const botao = document.getElementById("enviar");
     const resultado = document.getElementById("resultado");
+
+    async function carregarLivros() {
+      try {
+        const livros = await listarLivros();
+        seletor.replaceChildren();
+        if (livros.length === 0) {
+          seletor.append(new Option("Nenhum livro cadastrado", ""));
+          return;
+        }
+        seletor.append(new Option("Escolha um livro", ""));
+        for (const l of livros) {
+          const autor = l.autor ? ", " + l.autor : "";
+          const aviso = l.quantidade > 0 ? "" : " (sem exemplar)";
+          seletor.append(new Option(l.titulo + autor + aviso, l.id));
+        }
+        seletor.disabled = false;
+        botao.disabled = false;
+      } catch {
+        seletor.replaceChildren(new Option("Lista indisponível", ""));
+        mostrar(resultado, "erro", "Não foi possível carregar a lista de livros.");
+      }
+    }
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       botao.disabled = true;
       try {
         const { status, dados } = await chamar(CONFIG.URL_SOLICITAR, {
-          livro_id: document.getElementById("livro_id").value.trim(),
+          livro_id: seletor.value,
           email: document.getElementById("email").value.trim(),
         });
         if (status === 200 && dados.status === "disponivel") {
-          mostrar(resultado, "ok", "Livro disponível! Enviamos um e-mail pedindo que você compareça à livraria.");
+          mostrar(resultado, "ok", "Livro disponível. Enviamos um e-mail pedindo que você compareça à livraria.");
         } else if (status === 200 && dados.status === "lista_de_espera") {
-          mostrar(resultado, "espera", "Livro indisponível no momento. Você entrou na lista de espera e será avisado por e-mail.");
+          mostrar(resultado, "espera", "Livro sem exemplar no momento. Você entrou na lista de espera e receberá um e-mail quando ele chegar.");
         } else if (status === 404) {
           mostrar(resultado, "erro", "Livro não encontrado.");
         } else {
-          mostrar(resultado, "erro", dados.erro || "Erro inesperado (HTTP " + status + ").");
+          mostrar(resultado, "erro", dados.erro || "Erro " + status + ".");
         }
-      } catch (err) {
-        mostrar(resultado, "erro", "Falha de comunicação: " + err.message);
+      } catch {
+        mostrar(resultado, "erro", "Não foi possível falar com o servidor.");
       } finally {
         botao.disabled = false;
       }
     });
+
+    const formInscricao = document.getElementById("form-inscricao");
+    const botaoInscrever = document.getElementById("inscrever");
+    const resultadoInscricao = document.getElementById("resultado-inscricao");
+
+    formInscricao.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      botaoInscrever.disabled = true;
+      try {
+        const { status, dados } = await chamar(CONFIG.URL_INSCREVER, {
+          email: document.getElementById("email-inscricao").value.trim(),
+        });
+        if (status === 200) {
+          mostrar(resultadoInscricao, "ok", "Enviamos um e-mail de confirmação. Abra o link dele para começar a receber os avisos.");
+        } else {
+          mostrar(resultadoInscricao, "erro", dados.erro || "Erro " + status + ".");
+        }
+      } catch {
+        mostrar(resultadoInscricao, "erro", "Não foi possível falar com o servidor.");
+      } finally {
+        botaoInscrever.disabled = false;
+      }
+    });
+
+    carregarLivros();
   </script>
 </body>
 </html>

@@ -8,10 +8,10 @@
 </head>
 <body>
   <nav><a href="cliente.html">Área do cliente</a></nav>
-  <h1>Sebo: entrada de estoque</h1>
+  <h1>Entrada de estoque</h1>
   <form id="form">
     <label>Código do livro
-      <input id="id" required placeholder="ex.: L001">
+      <input id="id" required>
     </label>
     <label>Título
       <input id="titulo" required>
@@ -22,64 +22,83 @@
     <label>Quantidade (negativa registra saída)
       <input id="quantidade" type="number" step="1" value="1" required>
     </label>
-    <button id="enviar" type="submit">Cadastrar</button>
+    <button id="enviar" type="submit">Registrar</button>
   </form>
   <div id="resultado" class="msg"></div>
 
   <h2>Estoque</h2>
-  <button id="atualizar" type="button">Atualizar estoque</button>
-  <div id="estoque"></div>
+  <table id="estoque">
+    <thead>
+      <tr><th>Código</th><th>Título</th><th>Autor</th><th>Qtd</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+  <div id="erro-estoque" class="msg"></div>
+  <button id="atualizar" type="button">Atualizar</button>
 
   <script src="config.js"></script>
   <script>
     const form = document.getElementById("form");
     const botao = document.getElementById("enviar");
     const resultado = document.getElementById("resultado");
+    const erroEstoque = document.getElementById("erro-estoque");
+    const corpoTabela = document.querySelector("#estoque tbody");
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
+      const quantidade = Number(document.getElementById("quantidade").value);
+      if (!Number.isInteger(quantidade)) {
+        mostrar(resultado, "erro", "A quantidade deve ser um número inteiro.");
+        return;
+      }
       botao.disabled = true;
       try {
         const { status, dados } = await chamar(CONFIG.URL_CADASTRAR, {
           id: document.getElementById("id").value.trim(),
           titulo: document.getElementById("titulo").value.trim(),
           autor: document.getElementById("autor").value.trim(),
-          quantidade: parseInt(document.getElementById("quantidade").value, 10),
+          quantidade,
         });
         if (status === 200) {
-          mostrar(resultado, "ok", "Estoque atualizado. " + JSON.stringify(dados));
+          const falhas = dados.falhas || [];
+          if (falhas.length > 0) {
+            mostrar(resultado, "espera", "Estoque atualizado, mas não foi possível avisar: " + falhas.join(", ") + ". Eles continuam na lista de espera.");
+          } else {
+            mostrar(resultado, "ok", "Estoque atualizado. Clientes avisados: " + (dados.clientes_avisados || []).length + ".");
+          }
           carregarEstoque();
         } else if (status === 409) {
           mostrar(resultado, "erro", "Estoque insuficiente para essa saída.");
         } else {
-          mostrar(resultado, "erro", dados.erro || "Erro inesperado (HTTP " + status + ").");
+          mostrar(resultado, "erro", dados.erro || "Erro " + status + ".");
         }
-      } catch (err) {
-        mostrar(resultado, "erro", "Falha de comunicação: " + err.message);
+      } catch {
+        mostrar(resultado, "erro", "Não foi possível falar com o servidor.");
       } finally {
         botao.disabled = false;
       }
     });
 
+    function linha(livro) {
+      const tr = document.createElement("tr");
+      for (const valor of [livro.id, livro.titulo, livro.autor, livro.quantidade]) {
+        const td = document.createElement("td");
+        td.textContent = valor;
+        tr.append(td);
+      }
+      return tr;
+    }
+
     async function carregarEstoque() {
-      const alvo = document.getElementById("estoque");
-      if (!CONFIG.URL_LISTAR) {
-        alvo.textContent = "Listagem indisponível: configure URL_LISTAR em config.js (Lambda Listar).";
-        return;
-      }
       try {
-        const { status, dados } = await chamar(CONFIG.URL_LISTAR, {});
-        if (status !== 200) { alvo.textContent = "Erro ao listar (HTTP " + status + ")."; return; }
-        const linhas = (dados.livros || []).map(l =>
-          `<tr><td>${esc(l.id)}</td><td>${esc(l.titulo)}</td><td>${esc(l.autor)}</td><td>${esc(l.quantidade)}</td></tr>`).join("");
-        alvo.innerHTML = "<table><tr><th>ID</th><th>Título</th><th>Autor</th><th>Qtd</th></tr>" + linhas + "</table>";
-      } catch (err) {
-        alvo.textContent = "Falha de comunicação: " + err.message;
+        const livros = await listarLivros();
+        corpoTabela.replaceChildren(...livros.map(linha));
+        erroEstoque.className = "msg";
+      } catch {
+        mostrar(erroEstoque, "erro", "Não foi possível carregar o estoque.");
       }
     }
-    function esc(v) {
-      return String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-    }
+
     document.getElementById("atualizar").addEventListener("click", carregarEstoque);
     carregarEstoque();
   </script>
